@@ -1,17 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { CalendarDays, CheckCircle2, Flame, Lock, LogOut, Medal, RefreshCcw, Sparkles, Trophy, Users } from 'lucide-react';
+import { CheckCircle2, Flame, Lock, LogOut, Medal, RefreshCcw, Sparkles, Trophy, Users } from 'lucide-react';
+import DailyView from './components/DailyView';
+import WeeklyView from './components/WeeklyView';
+import MonthlyTaskView from './components/MonthlyTaskView';
+import ViewTabs from './components/ViewTabs';
+import { PEOPLE } from './data/schedules';
+import { fetchTracker, saveTrackerEntry } from './services/trackerApi';
 import './styles.css';
-
-const PEOPLE = ['Sahil', 'Shreya', 'Thanya'];
-const STATUS_FLOW = ['empty', 'done', 'cheat', 'missed'];
-const STATUS_LABELS = { empty: 'Pending', done: 'Done', cheat: 'Cheat', missed: 'Missed' };
 
 function getTodayParts() { const now = new Date(); return { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() }; }
 function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
 function pad(value) { return String(value).padStart(2, '0'); }
-function dateKey(year, month, day) { return `${year}-${pad(month)}-${pad(day)}`; }
+function dateKey(year, month, day) { return year + '-' + pad(month) + '-' + pad(day); }
 function credentialFor(name) { return name.toUpperCase(); }
+function getEntryStatus(entry) { return typeof entry === 'string' ? entry : entry?.status || 'empty'; }
 
 function calculateStats(personData = {}, year, month) {
   const totalDays = daysInMonth(year, month);
@@ -20,7 +23,7 @@ function calculateStats(personData = {}, year, month) {
   const limitDay = today.year === year && today.month === month ? today.day : totalDays;
 
   for (let day = 1; day <= totalDays; day++) {
-    const status = personData[dateKey(year, month, day)] || 'empty';
+    const status = getEntryStatus(personData[dateKey(year, month, day)]);
     if (status === 'done') done += 1;
     if (status === 'cheat') cheat += 1;
     if (status === 'missed') missed += 1;
@@ -77,10 +80,10 @@ function Login({ onLogin }) {
 function TrackerApp({ user, onLogout }) {
   const today = getTodayParts();
   const loggedPerson = PEOPLE.find((p) => credentialFor(p) === user) || PEOPLE[0];
-  const selectedPerson = loggedPerson;
   const [year, setYear] = useState(today.year);
   const [month, setMonth] = useState(today.month);
   const [tracker, setTracker] = useState({});
+  const [activeView, setActiveView] = useState('daily');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -88,34 +91,23 @@ function TrackerApp({ user, onLogout }) {
   async function loadTracker() {
     try {
       setLoading(true); setError('');
-      const response = await fetch(`/api/tracker?year=${year}&month=${month}`);
-      if (!response.ok) throw new Error('Unable to load tracker data');
-      const data = await response.json();
-      setTracker(data.tracker || {});
+      setTracker(await fetchTracker(year, month));
     } catch (err) { setError(err.message || 'Something went wrong'); }
     finally { setLoading(false); }
   }
 
   useEffect(() => { loadTracker(); }, [year, month]);
 
-  const selectedStats = useMemo(() => calculateStats(tracker[selectedPerson], year, month), [tracker, selectedPerson, year, month]);
+  const selectedStats = useMemo(() => calculateStats(tracker[loggedPerson], year, month), [tracker, loggedPerson, year, month]);
   const leaderboard = useMemo(() => PEOPLE.map((name) => ({ name, ...calculateStats(tracker[name], year, month) })).sort((a, b) => b.score - a.score), [tracker, year, month]);
   const monthName = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long' });
 
-  async function updateStatus(day) {
-    const key = dateKey(year, month, day);
-    const current = tracker[loggedPerson]?.[key] || 'empty';
-    let next = STATUS_FLOW[(STATUS_FLOW.indexOf(current) + 1) % STATUS_FLOW.length];
-    const stats = calculateStats(tracker[loggedPerson], year, month);
-    if (next === 'cheat' && stats.cheat >= 3 && current !== 'cheat') next = 'missed';
-    const optimistic = { ...tracker, [loggedPerson]: { ...(tracker[loggedPerson] || {}), [key]: next } };
-    setTracker(optimistic);
+  async function saveEntry({ date, status, tasks }) {
     try {
       setSaving(true);
-      const response = await fetch('/api/tracker', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ person: loggedPerson, date: key, status: next, year, month }) });
-      if (!response.ok) throw new Error('Unable to save status');
-      const data = await response.json();
-      setTracker(data.tracker || optimistic);
+      const optimistic = { ...tracker, [loggedPerson]: { ...(tracker[loggedPerson] || {}), [date]: { status, tasks: tasks || {} } } };
+      setTracker(optimistic);
+      setTracker(await saveTrackerEntry({ person: loggedPerson, date, status, tasks: tasks || {}, year, month }));
     } catch (err) { setError(err.message || 'Save failed'); loadTracker(); }
     finally { setSaving(false); }
   }
@@ -128,26 +120,25 @@ function TrackerApp({ user, onLogout }) {
         <div>
           <p className="eyebrow"><Sparkles size={16} /> Monthly Discipline Tracker</p>
           <h1>{loggedPerson}, track your one important task daily.</h1>
-          <p className="subtitle">⚠️ Data is automatically deleted after 35 days. Done days and up to 3 cheat days count toward the monthly score. Everyone can see the central result dashboard.</p>
+          <p className="subtitle">⚠️ Data is automatically deleted after 35 days. Daily tasks power weekly and monthly scores. Everyone can see the central result dashboard.</p>
         </div>
-        <div className="hero-card"><Trophy size={34} /><strong>{selectedStats.score}%</strong><span>{selectedPerson}'s score</span><button className="logout-btn" onClick={onLogout}><LogOut size={15} /> Logout</button></div>
+        <div className="hero-card"><Trophy size={34} /><strong>{selectedStats.score}%</strong><span>{loggedPerson}'s score</span><button className="logout-btn" onClick={onLogout}><LogOut size={15} /> Logout</button></div>
       </section>
       {error && <div className="alert">{error}</div>}
       <section className="top-bar">
         <div className="people-tabs"><button className="active"><Users size={16} /> {loggedPerson}</button></div>
         <div className="month-switcher"><button onClick={() => changeMonth(-1)}>‹</button><strong>{monthName} {year}</strong><button onClick={() => changeMonth(1)}>›</button></div>
       </section>
-      <section className="stats-grid"><Stat icon={<CheckCircle2 />} label="Completed" value={selectedStats.done} /><Stat icon={<RefreshCcw />} label="Cheat Left" value={`${selectedStats.cheatLeft}/3`} /><Stat icon={<Flame />} label="Current Streak" value={selectedStats.currentStreak} /><Stat icon={<Medal />} label="Longest Streak" value={selectedStats.longestStreak} /></section>
+      <section className="stats-grid"><Stat icon={<CheckCircle2 />} label="Completed" value={selectedStats.done} /><Stat icon={<RefreshCcw />} label="Cheat Left" value={selectedStats.cheatLeft + '/3'} /><Stat icon={<Flame />} label="Current Streak" value={selectedStats.currentStreak} /><Stat icon={<Medal />} label="Longest Streak" value={selectedStats.longestStreak} /></section>
       <CentralDashboard leaderboard={leaderboard} />
-      <section className="content-grid">
-        <div className="panel calendar-panel"><div className="panel-title"><CalendarDays /><div><h2>{selectedPerson}'s Calendar</h2><p>Click a day: Pending → Done → Cheat → Missed.</p></div></div>{loading ? <div className="loader">Loading tracker...</div> : <CalendarGrid year={year} month={month} personData={tracker[selectedPerson] || {}} onDayClick={updateStatus} />}{saving && <p className="saving">Saving...</p>}</div>
-        <aside className="panel leaderboard-panel"><h2>Leaderboard</h2><div className="leaderboard">{leaderboard.map((item, index) => <div className="leader-row" key={item.name}><span className="rank">{index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉'}</span><div><strong>{item.name}</strong><small>{item.done} done · {item.cheat} cheat · {item.missed} missed</small></div><b>{item.score}%</b></div>)}</div><div className="score-box"><h3>Monthly Score</h3><p>({selectedStats.done} done + {Math.min(selectedStats.cheat, 3)} cheat) / {selectedStats.totalDays} × 100 = <strong>{selectedStats.score}%</strong></p></div></aside>
-      </section>
+      <ViewTabs activeView={activeView} onChange={setActiveView} />
+      {loading ? <div className="panel loader">Loading tracker...</div> : activeView === 'daily' ? <DailyView person={loggedPerson} year={year} month={month} tracker={tracker} onSaveEntry={saveEntry} /> : activeView === 'weekly' ? <WeeklyView person={loggedPerson} year={year} month={month} tracker={tracker} /> : <MonthlyTaskView person={loggedPerson} year={year} month={month} tracker={tracker} />}
+      {saving && <p className="saving">Saving...</p>}
+      <aside className="panel leaderboard-panel full-width"><h2>Leaderboard</h2><div className="leaderboard">{leaderboard.map((item, index) => <div className="leader-row" key={item.name}><span className="rank">{index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉'}</span><div><strong>{item.name}</strong><small>{item.done} done · {item.cheat} cheat · {item.missed} missed</small></div><b>{item.score}%</b></div>)}</div></aside>
     </main>
   );
 }
 
-function CentralDashboard({ leaderboard }) { return <section className="central-grid">{leaderboard.map((person) => <div className="central-card" key={person.name}><strong>{person.name}</strong><div className="progress"><span style={{ width: `${person.score}%` }} /></div><p>{person.score}% · {person.done} done · {person.cheat}/3 cheat · {person.missed} missed</p></div>)}</section>; }
+function CentralDashboard({ leaderboard }) { return <section className="central-grid">{leaderboard.map((person) => <div className="central-card" key={person.name}><strong>{person.name}</strong><div className="progress"><span style={{ width: person.score + '%' }} /></div><p>{person.score}% · {person.done} done · {person.cheat}/3 cheat · {person.missed} missed</p></div>)}</section>; }
 function Stat({ icon, label, value }) { return <div className="stat-card"><span>{icon}</span><p>{label}</p><strong>{value}</strong></div>; }
-function CalendarGrid({ year, month, personData, onDayClick }) { const total = daysInMonth(year, month); const firstDay = new Date(year, month - 1, 1).getDay(); const blanks = Array.from({ length: firstDay }); const days = Array.from({ length: total }, (_, index) => index + 1); return <div className="calendar-grid">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <span className="week" key={day}>{day}</span>)}{blanks.map((_, index) => <span key={`blank-${index}`} />)}{days.map((day) => { const status = personData[dateKey(year, month, day)] || 'empty'; return <button key={day} className={`day ${status}`} onClick={() => onDayClick(day)} title={STATUS_LABELS[status]}><b>{day}</b><small>{STATUS_LABELS[status]}</small></button>; })}</div>; }
 createRoot(document.getElementById('root')).render(<App />);
